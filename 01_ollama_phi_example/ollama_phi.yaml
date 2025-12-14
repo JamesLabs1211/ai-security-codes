@@ -1,0 +1,31 @@
+outputs:
+  content: '{{ content }}'
+  chatCompletion: '{{ chatCompletion }}'
+  statusCode: '{{ statusCode }}'
+  files: '{{ files }}'
+type: workflow
+stages:
+  - type: retry
+    attempts: 3
+    backoff: '{{ 2 * attempt }}'
+    block:
+      outputs:
+        content: '{{ response.json()?.choices?.[0]?.message?.content || response.body }}'
+        chatCompletion: '{{ response.json() }}'
+        statusCode: '{{ response.statusCode }}'
+        files: |-
+          {{ response.json()
+            ? [{ name: 'response.json', data: response.json() }]
+            : [] }}
+      type: request
+      method: POST
+      json: >-
+        {{ { model: "phi3:latest", messages: [{ role: "user", content: prompt
+        }], stream: false } }}
+      timeout: 300
+      url: https://<<YOUR_OLLAMA_URL_IS_HERE>>/v1/chat/completions
+      headers:
+        Accept: application/json
+        Authorization: Bearer {{ apiKey }}
+      queryParams: {}
+    when: '{{ Array.contains([429, 500, 502, 503, 504], statusCode) }}'
