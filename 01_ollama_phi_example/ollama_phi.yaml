@@ -10,7 +10,7 @@ stages:
     backoff: '{{ 2 * attempt }}'
     block:
       outputs:
-        content: '{{ response.json()?.choices?.[0]?.message?.content || response.body }}'
+        content: '{{ response.json()?.message?.content || response.body }}'
         chatCompletion: '{{ response.json() }}'
         statusCode: '{{ response.statusCode }}'
         files: |-
@@ -20,12 +20,12 @@ stages:
       type: request
       method: POST
       json: >-
-        {{ { model: "phi3:latest", messages: [{ role: "user", content: prompt
-        }], stream: false } }}
+        {{ { model: "phi4-mini:latest", messages: [{ role: "user", content:
+        prompt }], stream: false } }}
       timeout: 300
-      url: https://<<YOUR_OLLAMA_URL_IS_HERE>>/v1/chat/completions
+      url: https://<<YOUR OLLAMA URL IS HERE>>/api/chat
       headers:
         Accept: application/json
         Authorization: Bearer {{ apiKey }}
       queryParams: {}
-    when: '{{ Array.contains([429, 500, 502, 503, 504], statusCode) }}'
+    when: '{{ Array.contains([429, 500, 502, 503, 504], response.statusCode) }}'
