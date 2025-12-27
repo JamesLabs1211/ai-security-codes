@@ -1,0 +1,180 @@
+when RULE_INIT {
+    # Default system prompt (fallback)
+    set static::DEFAULT_SYSTEM_PROMPT "You are a concise assistant. HARD RULE: Your response must contain no more than three sentences total.Do not use lists, bullet points, headings, or extra line breaks.Stop generating immediately after the third sentence, even if the answer is incomplete."
+ 
+    # Optional datagroup name for prompt override (string DG: key=default, value=prompt)
+    set static::SYSTEM_PROMPT_DG "dg_ollama_system_prompt"
+ 
+    # Max body to collect (1MB)
+    set static::MAX_BODY 1048576
+ 
+    # How many bytes to log as hex prefix
+    set static::LOG_HEX_PREFIX_BYTES 160
+    
+    # Ollama options configuration
+    set static::OLLAMA_NUM_PREDICT 120
+    set static::OLLAMA_TEMPERATURE 0.2
+    
+    # Enable detailed payload logging (set to 1 to enable, 0 to disable)
+    set static::ENABLE_PAYLOAD_LOGGING 0
+}
+ 
+when HTTP_REQUEST {
+    if { [HTTP::method] ne "POST" } { return }
+    if { !([HTTP::path] starts_with "/api/chat") } { return }
+ 
+    # Only handle JSON
+    if { !([HTTP::header exists "Content-Type"]) ||
+         !([string tolower [HTTP::header value "Content-Type"]] contains "application/json") } {
+        return
+    }
+ 
+    # Collect request body
+    if { [HTTP::header exists "Content-Length"] &&
+         [HTTP::header "Content-Length"] <= $static::MAX_BODY } {
+        HTTP::collect [HTTP::header "Content-Length"]
+    } else {
+        log local0. "OLLAMA iRule: missing/too-large Content-Length, skipping."
+        return
+    }
+}
+ 
+when HTTP_REQUEST_DATA {
+    log local0. "OLLAMA iRule: ===== HTTP_REQUEST_DATA ====="
+    log local0. "OLLAMA iRule: client=[IP::client_addr]:[TCP::client_port] uri=[HTTP::path]"
+    log local0. "OLLAMA iRule: Content-Type=[HTTP::header value Content-Type]"
+ 
+    # Grab raw payload bytes
+    set payload [HTTP::payload]
+    set payload_len [string length $payload]
+    log local0. "OLLAMA iRule: payload_bytes_len=$payload_len"
+ 
+    # Log first N bytes as hex (original)
+    set n $static::LOG_HEX_PREFIX_BYTES
+    if { $payload_len < $n } { set n $payload_len }
+    if { $n > 0 } {
+        set prefix_bytes [string range $payload 0 [expr {$n - 1}]]
+        binary scan $prefix_bytes H* prefix_hex
+        log local0. "OLLAMA iRule: first_${n}_bytes_hex=$prefix_hex"
+    }
+ 
+    # Log original request payload (if enabled)
+    if { $static::ENABLE_PAYLOAD_LOGGING } {
+        log local0. "OLLAMA iRule: === ORIGINAL REQUEST PAYLOAD ==="
+        log local0. "OLLAMA iRule: $payload"
+        log local0. "OLLAMA iRule: === END ORIGINAL PAYLOAD ==="
+    }
+ 
+    # Decide system prompt (DG overrides)
+    set sys_prompt ""
+    if { [class exists $static::SYSTEM_PROMPT_DG] } {
+        set dg_val [class match -value "default" equals $static::SYSTEM_PROMPT_DG]
+        if { $dg_val ne "" } {
+            set sys_prompt $dg_val
+        } else {
+            set sys_prompt $static::DEFAULT_SYSTEM_PROMPT
+        }
+    } else {
+        set sys_prompt $static::DEFAULT_SYSTEM_PROMPT
+    }
+ 
+    # Escape JSON-sensitive characters in the system prompt only
+    regsub -all {\\} $sys_prompt {\\\\} sys_prompt
+    regsub -all {"}  $sys_prompt {\\"}  sys_prompt
+ 
+    set system_obj "{\"role\":\"system\",\"content\":\"$sys_prompt\"}"
+ 
+    # Locate $.messages using JSON library
+    set tok_len -1
+    set tok_idx [call json::json_get $payload "$.messages" tok_len]
+    log local0. "OLLAMA iRule: json_get(\$.messages) idx=$tok_idx len=$tok_len"
+ 
+    if { $tok_idx < 0 || $tok_len <= 0 } {
+        log local0. "OLLAMA iRule: $.messages not found, skipping modification."
+        HTTP::release
+        return
+    }
+ 
+    set messages_tok [string range $payload $tok_idx [expr {$tok_idx + $tok_len - 1}]]
+    if { [string index $messages_tok 0] ne "\[" } {
+        log local0. "OLLAMA iRule: $.messages is not an array, skipping."
+        HTTP::release
+        return
+    }
+ 
+    # Prepend system message (preserve rest of payload as raw bytes)
+    set inner [string range $messages_tok 1 end-1]
+    set inner [string trim $inner]
+ 
+    if { $inner eq "" } {
+        set new_messages "\[$system_obj\]"
+    } else {
+        set new_messages "\[$system_obj,$inner\]"
+    }
+ 
+    set prefix [string range $payload 0 [expr {$tok_idx - 1}]]
+    set suffix [string range $payload [expr {$tok_idx + $tok_len}] end]
+    set new_payload "${prefix}${new_messages}${suffix}"
+ 
+    # Force binary-safe writeback (avoid any implicit re-encoding)
+    set new_payload_bin [binary format a* $new_payload]
+ 
+    # Log first N bytes as hex (modified)
+    set new_len [string length $new_payload_bin]
+    log local0. "OLLAMA iRule: modified payload_bytes_len=$new_len"
+ 
+    set n2 $static::LOG_HEX_PREFIX_BYTES
+    if { $new_len < $n2 } { set n2 $new_len }
+    if { $n2 > 0 } {
+        set prefix2 [string range $new_payload_bin 0 [expr {$n2 - 1}]]
+        binary scan $prefix2 H* hex2
+        log local0. "OLLAMA iRule: modified first_${n2}_bytes_hex=$hex2"
+    }
+    
+    # First, replace with system prompt injected payload
+    HTTP::payload replace 0 [HTTP::payload length] $new_payload_bin
+    
+    # Add options object if not present
+    # Now work with the updated payload
+    set current_payload [HTTP::payload]
+    set tok_len_opt -1
+    set tok_idx_opt [call json::json_get $current_payload "$.options" tok_len_opt]
+    
+    if { $tok_idx_opt < 0 } {
+        # $.options not found, inject it
+        log local0. "OLLAMA iRule: $.options not found, injecting options"
+        
+        set options_obj "\"options\":\{\"num_predict\":$static::OLLAMA_NUM_PREDICT,\"temperature\":$static::OLLAMA_TEMPERATURE\}"
+        
+        # Find the last closing brace of the JSON object
+        set last_brace [string last "\}" $current_payload]
+        
+        if { $last_brace > 0 } {
+            set before_brace [string range $current_payload 0 [expr {$last_brace - 1}]]
+            set before_trimmed [string trimright $before_brace]
+            
+            # Add comma if there's content before
+            if { [string index $before_trimmed end] ne "\{" } {
+                set new_payload_final "${before_trimmed},${options_obj}\}"
+            } else {
+                set new_payload_final "${before_trimmed}${options_obj}\}"
+            }
+            
+            set new_payload_bin [binary format a* $new_payload_final]
+            HTTP::payload replace 0 [HTTP::payload length] $new_payload_bin
+            log local0. "OLLAMA iRule: options injected, new payload_bytes_len=[string length $new_payload_bin]"
+        }
+    } else {
+        log local0. "OLLAMA iRule: $.options already exists, skipping injection"
+    }
+    
+    # Log final modified request payload (if enabled)
+    if { $static::ENABLE_PAYLOAD_LOGGING } {
+        set final_payload [HTTP::payload]
+        log local0. "OLLAMA iRule: === MODIFIED REQUEST PAYLOAD ==="
+        log local0. "OLLAMA iRule: $final_payload"
+        log local0. "OLLAMA iRule: === END MODIFIED PAYLOAD ==="
+    }
+    
+    HTTP::release
+}
