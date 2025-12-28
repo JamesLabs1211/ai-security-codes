@@ -20,7 +20,7 @@ stages:
       type: request
       method: POST
       json: >-
-        {{ { model: "phi4-mini:latest", messages: [{ role: "user", content:
+        {{ { model: "phi4-mini:3.8b-q4_K_M", messages: [{ role: "user", content:
         prompt }], stream: false } }}
       timeout: 300
       url: https://<<YOUR OLLAMA URL IS HERE>>/api/chat
