@@ -7,7 +7,7 @@ outputs:
 type: workflow
 stages:
   - type: retry
-    attempts: 3
+    attempts: 5
     backoff: '{{ 2 * attempt }}'
     block:
       outputs:
@@ -22,8 +22,8 @@ stages:
       method: POST
       json: >-
         {{ { model: "phi4-mini:3.8b-q4_K_M", messages: [{ role: "user", content: prompt }], stream: false } }}
-      timeout: 300
-      url: https://james-llm.xc.james-appsec.com/api/chat
+      timeout: 900
+      url: << YOUR LLM LINK >>
       headers:
         Accept: application/json
         Authorization: Bearer {{ apiKey }}
