@@ -21,7 +21,7 @@ stages:
       type: request
       method: POST
       json: >-
-        {{ { model: "phi4-mini:3.8b-q4_K_M", messages: [{ role: "user", content: prompt }], stream: false } }}
+        {{ { model: "<< YOUR MODEL NAME >>", messages: [{ role: "user", content: prompt }], stream: false } }}
       timeout: 900
       url: << YOUR LLM LINK >>
       headers:
