@@ -3,6 +3,7 @@ outputs:
   chatCompletion: '{{ chatCompletion }}'
   statusCode: '{{ statusCode }}'
   files: '{{ files }}'
+
 type: workflow
 stages:
   - type: retry
@@ -20,12 +21,11 @@ stages:
       type: request
       method: POST
       json: >-
-        {{ { model: "phi4-mini:3.8b-q4_K_M", messages: [{ role: "user", content:
-        prompt }], stream: false } }}
+        {{ { model: "phi4-mini:3.8b-q4_K_M", messages: [{ role: "user", content: prompt }], stream: false } }}
       timeout: 300
-      url: https://<<YOUR OLLAMA URL IS HERE>>/api/chat
+      url: https://james-llm.xc.james-appsec.com/api/chat
       headers:
         Accept: application/json
         Authorization: Bearer {{ apiKey }}
       queryParams: {}
-    when: '{{ Array.contains([429, 500, 502, 503, 504], response.statusCode) }}'
+    when: '{{ Array.contains([429, 500, 502, 503, 504], statusCode) }}'
